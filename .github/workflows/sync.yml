@@ -1,20 +1,27 @@
 name: Sync & Convert Super Pre Package
 
 on:
-  workflow_dispatch: # 支援手動一鍵點擊執行
+  workflow_dispatch: # 支援手動在網頁上一鍵點擊執行
   schedule:
-    - cron: '0 20 * * *' # 每天 UTC 20:00 (香港/台北時間 04:00) 自動檢查
+    - cron: '0 20 * * *' # 每天 UTC 20:00 (香港/台北時間 04:00) 自動檢查更新
 
 permissions:
-  contents: write
+  contents: read
   pages: write
   id-token: write
 
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
 jobs:
-  sync-and-convert:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
-      - name: 檢出倉庫
+      - name: 檢出倉庫代碼
         uses: actions/checkout@v4
 
       - name: 配置 Python 環境
@@ -30,7 +37,8 @@ jobs:
           python - << 'EOF'
           import os, shutil, zipfile, sqlite3, requests, opencc
 
-          cc = opencc.OpenCC('s2twp.json') # 台灣慣用詞彙，香港習慣可換 s2hk.json
+          # 使用台灣習慣詞彙 (s2twp)，若習慣香港詞彙可改為 s2hk.json
+          cc = opencc.OpenCC('s2twp.json')
 
           OFFICIAL_VER_URL = "https://cdn02.moecube.com:444/ygopro-super-pre/data/version.txt"
           OFFICIAL_JSON_URL = "https://cdn02.moecube.com:444/ygopro-super-pre/data/test-release.json"
@@ -39,7 +47,7 @@ jobs:
           os.makedirs("public/data", exist_ok=True)
           os.makedirs("public/archive", exist_ok=True)
 
-          # 1. 下載版本號比對
+          # 1. 下載版本號
           print("正在檢查版本號...")
           r_ver = requests.get(OFFICIAL_VER_URL, timeout=30)
           with open("public/data/version.txt", "w", encoding="utf-8") as f:
@@ -51,18 +59,19 @@ jobs:
           with open("public/data/test-release.json", "w", encoding="utf-8") as f:
               f.write(cc.convert(r_json.text))
 
-          # 3. 下載 ygopro-super-pre.ypk 並解壓縮轉繁體
+          # 3. 下載 ygopro-super-pre.ypk
           print("正在下載官方 ypk 增量包...")
           r_ypk = requests.get(OFFICIAL_YPK_URL, timeout=60)
           with open("temp.ypk", "wb") as f:
               f.write(r_ypk.content)
 
+          # 4. 解壓縮 ypk
           print("解壓 ypk 檔案中...")
           os.makedirs("temp_ypk_extracted", exist_ok=True)
           with zipfile.ZipFile("temp.ypk", "r") as z:
               z.extractall("temp_ypk_extracted")
 
-          # 4. 尋找並轉換 ypk 內的所有 .cdb 檔案
+          # 5. 尋找並轉換內部所有 .cdb 與文字設定檔
           for root, _, files in os.walk("temp_ypk_extracted"):
               for file in files:
                   full_path = os.path.join(root, file)
@@ -92,7 +101,7 @@ jobs:
                       with open(full_path, "w", encoding="utf-8") as f:
                           f.write(cc.convert(txt))
 
-          # 5. 重新封裝回 ypk
+          # 6. 重新打包 ypk
           print("重新打包 ypk 增量包...")
           target_ypk = "public/archive/ygopro-super-pre.ypk"
           with zipfile.ZipFile(target_ypk, "w", zipfile.ZIP_DEFLATED) as z_out:
@@ -105,8 +114,11 @@ jobs:
           print("處理完畢，檔案已備妥至 public/ 目錄！")
           EOF
 
-      - name: 部署至 GitHub Pages
-        uses: peaceiris/actions-gh-pages@v4
+      - name: 上傳產物至 GitHub Pages
+        uses: actions/upload-pages-artifact@v3
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./public
+          path: ./public
+
+      - name: 部署至 GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

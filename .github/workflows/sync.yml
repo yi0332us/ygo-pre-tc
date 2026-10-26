@@ -1,0 +1,112 @@
+name: Sync & Convert Super Pre Package
+
+on:
+  workflow_dispatch: # 支援手動一鍵點擊執行
+  schedule:
+    - cron: '0 20 * * *' # 每天 UTC 20:00 (香港/台北時間 04:00) 自動檢查
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  sync-and-convert:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 檢出倉庫
+        uses: actions/checkout@v4
+
+      - name: 配置 Python 環境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: 安裝依賴 (OpenCC 與 Requests)
+        run: pip install opencc requests
+
+      - name: 檢查官方更新並轉換為繁體
+        run: |
+          python - << 'EOF'
+          import os, shutil, zipfile, sqlite3, requests, opencc
+
+          cc = opencc.OpenCC('s2twp.json') # 台灣慣用詞彙，香港習慣可換 s2hk.json
+
+          OFFICIAL_VER_URL = "https://cdn02.moecube.com:444/ygopro-super-pre/data/version.txt"
+          OFFICIAL_JSON_URL = "https://cdn02.moecube.com:444/ygopro-super-pre/data/test-release.json"
+          OFFICIAL_YPK_URL = "https://cdn02.moecube.com:444/ygopro-super-pre/archive/ygopro-super-pre.ypk"
+
+          os.makedirs("public/data", exist_ok=True)
+          os.makedirs("public/archive", exist_ok=True)
+
+          # 1. 下載版本號比對
+          print("正在檢查版本號...")
+          r_ver = requests.get(OFFICIAL_VER_URL, timeout=30)
+          with open("public/data/version.txt", "w", encoding="utf-8") as f:
+              f.write(r_ver.text.strip())
+
+          # 2. 下載並轉換 test-release.json
+          print("正在處理 test-release.json...")
+          r_json = requests.get(OFFICIAL_JSON_URL, timeout=30)
+          with open("public/data/test-release.json", "w", encoding="utf-8") as f:
+              f.write(cc.convert(r_json.text))
+
+          # 3. 下載 ygopro-super-pre.ypk 並解壓縮轉繁體
+          print("正在下載官方 ypk 增量包...")
+          r_ypk = requests.get(OFFICIAL_YPK_URL, timeout=60)
+          with open("temp.ypk", "wb") as f:
+              f.write(r_ypk.content)
+
+          print("解壓 ypk 檔案中...")
+          os.makedirs("temp_ypk_extracted", exist_ok=True)
+          with zipfile.ZipFile("temp.ypk", "r") as z:
+              z.extractall("temp_ypk_extracted")
+
+          # 4. 尋找並轉換 ypk 內的所有 .cdb 檔案
+          for root, _, files in os.walk("temp_ypk_extracted"):
+              for file in files:
+                  full_path = os.path.join(root, file)
+                  if file.endswith(".cdb"):
+                      print(f"正在轉換卡片庫: {file}")
+                      conn = sqlite3.connect(full_path)
+                      c = conn.cursor()
+                      c.execute("SELECT id, name, desc, str1, str2, str3, str4, str5, str6, str7, str8, str9, str10, str11, str12, str13, str14, str15, str16 FROM texts")
+                      rows = c.fetchall()
+                      updated = []
+                      for row in rows:
+                          card_id = row[0]
+                          converted = [cc.convert(col) if col else "" for col in row[1:]]
+                          updated.append(tuple(converted) + (card_id,))
+                      c.executemany("""
+                          UPDATE texts SET 
+                              name=?, desc=?, str1=?, str2=?, str3=?, str4=?, str5=?, str6=?, str7=?, str8=?,
+                              str9=?, str10=?, str11=?, str12=?, str13=?, str14=?, str15=?, str16=? 
+                          WHERE id=?
+                      """, updated)
+                      conn.commit()
+                      conn.close()
+                  elif file.endswith(".conf") or file.endswith(".txt"):
+                      print(f"正在轉換文字檔: {file}")
+                      with open(full_path, "r", encoding="utf-8", errors="ignore") as f:
+                          txt = f.read()
+                      with open(full_path, "w", encoding="utf-8") as f:
+                          f.write(cc.convert(txt))
+
+          # 5. 重新封裝回 ypk
+          print("重新打包 ypk 增量包...")
+          target_ypk = "public/archive/ygopro-super-pre.ypk"
+          with zipfile.ZipFile(target_ypk, "w", zipfile.ZIP_DEFLATED) as z_out:
+              for root, _, files in os.walk("temp_ypk_extracted"):
+                  for file in files:
+                      local_file = os.path.join(root, file)
+                      arcname = os.path.relpath(local_file, "temp_ypk_extracted")
+                      z_out.write(local_file, arcname)
+
+          print("處理完畢，檔案已備妥至 public/ 目錄！")
+          EOF
+
+      - name: 部署至 GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./public

@@ -38,7 +38,7 @@ jobs:
           import os, shutil, zipfile, sqlite3, requests, opencc
 
           # 使用台灣習慣詞彙 (s2twp)，若習慣香港詞彙可改為 s2hk.json
-          cc = opencc.OpenCC('s2twp.json')
+          cc = opencc.OpenCC('s2hk.json')
 
           OFFICIAL_VER_URL = "https://cdn02.moecube.com:444/ygopro-super-pre/data/version.txt"
           OFFICIAL_JSON_URL = "https://cdn02.moecube.com:444/ygopro-super-pre/data/test-release.json"
